@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<components xmlns:scr="http://www.osgi.org/xmlns/scr/v1.0.0">
+    <scr:component enabled="true" immediate="true" name="org.apache.sling.auth.crowd.CrowdAuthenticationInfoPostProcessor">
+        <implementation class="org.apache.sling.auth.crowd.impl.CrowdAuthenticationInfoPostProcessor"/>
+        <service servicefactory="false">
+            <provide interface="org.apache.sling.auth.core.spi.AuthenticationInfoPostProcessor"/>
+        </service>
+        <property name="service.description" value="Apache Sling Atlassian Crowd AuthenticationInfoPostProcessor"/>
+        <property name="service.vendor" value="The Apache Software Foundation"/>
+        <property name="crowd.service.prefix"/>
+        <property name="crowd.service.username"/>
+        <property name="crowd.service.password"/>
+        <property name="service.pid" value="org.apache.sling.auth.crowd.CrowdAuthenticationInfoPostProcessor"/>
+    </scr:component>
+</components>

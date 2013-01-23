@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metatype:MetaData xmlns:metatype="http://www.osgi.org/xmlns/metatype/v1.0.0" localization="OSGI-INF/metatype/metatype">
+    <OCD id="org.apache.sling.auth.crowd.CrowdAuthenticationInfoPostProcessor" name="%auth.crowd.name" description="%auth.crowd.description">
+        <AD id="crowd.service.prefix" type="String" name="%crowd.service.prefix.name" description="%crowd.service.prefix.description"/>
+        <AD id="crowd.service.username" type="String" name="%crowd.service.username.name" description="%crowd.service.username.description"/>
+        <AD id="crowd.service.password" type="String" name="%crowd.service.password.name" description="%crowd.service.password.description"/>
+    </OCD>
+    <Designate pid="org.apache.sling.auth.crowd.CrowdAuthenticationInfoPostProcessor">
+        <Object ocdref="org.apache.sling.auth.crowd.CrowdAuthenticationInfoPostProcessor"/>
+    </Designate>
+</metatype:MetaData>
