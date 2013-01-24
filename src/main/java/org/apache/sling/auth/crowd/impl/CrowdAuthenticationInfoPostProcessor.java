@@ -19,6 +19,8 @@ import org.slf4j.LoggerFactory;
 
 import javax.jcr.RepositoryException;
 import javax.jcr.Session;
+import javax.jcr.Value;
+import javax.jcr.ValueFactory;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
@@ -118,24 +120,42 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
                     return;
                 }
 
-                //only import Crowd user to sling when it is non-BASIC auth
-                if (!info.getAuthType().equalsIgnoreCase(CrowdConstants.BASIC_AUTH_TYPE)) {
-                    String username = formatUsername(info.getUser());
-                    info.setUser(username);
-                    Authorizable authorizable = userManager.getAuthorizable(username);
-                    if (authorizable == null) {
-                        log.info("authorizable is null, try to authenticate from crowd");
+                String username = formatUsername(info.getUser());
+                String password = new String(info.getPassword());
 
-                        //if user not exists but auth with crowd success, create the user
-                        if (authenticateByCrowdService(username, new String(info.getPassword()))) {
-                            log.info("auth success from crowd, create the user");
-                            userManager.createUser(username, new String(info.getPassword()));
-                        }
+                info.setUser(username);
+                Authorizable authorizable = userManager.getAuthorizable(username);
+
+                if (authorizable == null) {
+                    log.info("authorizable is null, try to authenticate from crowd");
+
+                    //if user not exists but auth with crowd success, create the user
+                    if (authenticateByCrowdService(username, password)) {
+                        log.info("auth success from crowd, create the user");
+                        userManager.createUser(username, password);
+
+                        //set user version
+                        authorizable = userManager.getAuthorizable(username);
+                        String auth_ver = CreateUserAuthVersion(password);
+                        authorizable.setProperty(CrowdConstants.PROP_USER_AUTH_VERSION
+                                , session.getValueFactory().createValue(auth_ver));
                     }
-                    else if (!username.equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
-                        if (authenticateByCrowdService(username, new String(info.getPassword()))) {
-                            log.info("user exists, overwriting password");
-                            ((User) authorizable).changePassword(digestPassword(new String(info.getPassword()), "sha1"));
+                }
+                else if (!username.equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
+                    String auth_ver_old = null;
+                    Value[] values = authorizable.getProperty(CrowdConstants.PROP_USER_AUTH_VERSION);
+                    if (values != null && values.length > 0) {
+                        auth_ver_old = values[0].getString();
+                    }
+                    String auth_ver_new = CreateUserAuthVersion(password);
+                    if (!auth_ver_new.equals(auth_ver_old)) {
+                        log.info("old: " + auth_ver_old);
+                        log.info("new: " + auth_ver_new);
+                        if (authenticateByCrowdService(username, password)) {
+                            log.info("user exists, but password changed, overwriting password");
+                            ((User)authorizable).changePassword(auth_ver_new);
+                            authorizable.setProperty(CrowdConstants.PROP_USER_AUTH_VERSION
+                                    , session.getValueFactory().createValue(auth_ver_new));
                         }
                     }
                 }
@@ -144,6 +164,10 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
                 log.debug(ex.toString());
             }
         }
+    }
+
+    private String CreateUserAuthVersion(String password) {
+        return digestPassword(password, CrowdConstants.USER_PASSWORD_DIGEST_TYPE);
     }
 
     // ---------- Internals
