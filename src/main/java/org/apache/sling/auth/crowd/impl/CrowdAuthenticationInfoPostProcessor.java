@@ -8,6 +8,7 @@ import org.apache.jackrabbit.util.Text;
 import org.apache.sling.api.resource.LoginException;
 import org.apache.sling.auth.core.spi.AuthenticationInfo;
 import org.apache.sling.auth.core.spi.AuthenticationInfoPostProcessor;
+import org.apache.sling.auth.crowd.CrowdConstants;
 import org.apache.sling.commons.osgi.OsgiUtil;
 import org.apache.sling.jcr.api.SlingRepository;
 import org.apache.sling.jcr.base.util.AccessControlUtil;
@@ -116,20 +117,24 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
                     log.debug("userManager is null");
                     return;
                 }
-                Authorizable authorizable = userManager.getAuthorizable(info.getUser());
-                if (authorizable == null) {
-                    log.info("authorizable is null, try to authenticate from crowd");
 
-                    //if user not exists but auth with crowd success, create the user
-                    if (authenticateByCrowdService(info.getUser(), new String(info.getPassword()))) {
-                        log.info("auth success from crowd, create the user");
-                        userManager.createUser(info.getUser(), new String(info.getPassword()));
+                //only import Crowd user to sling when it is non-BASIC auth
+                if (!info.getAuthType().equalsIgnoreCase(CrowdConstants.BASIC_AUTH_TYPE)) {
+                    Authorizable authorizable = userManager.getAuthorizable(info.getUser());
+                    if (authorizable == null) {
+                        log.info("authorizable is null, try to authenticate from crowd");
+
+                        //if user not exists but auth with crowd success, create the user
+                        if (authenticateByCrowdService(info.getUser(), new String(info.getPassword()))) {
+                            log.info("auth success from crowd, create the user");
+                            userManager.createUser(info.getUser(), new String(info.getPassword()));
+                        }
                     }
-                }
-                else if (!info.getUser().equalsIgnoreCase("admin") && !info.getUser().equalsIgnoreCase("visitor")) {
-                    if (authenticateByCrowdService(info.getUser(), new String(info.getPassword()))) {
-                        log.info("user exists, overwriting password");
-                        ((User) authorizable).changePassword(digestPassword(new String(info.getPassword()), "sha1"));
+                    else if (!info.getUser().equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
+                        if (authenticateByCrowdService(info.getUser(), new String(info.getPassword()))) {
+                            log.info("user exists, overwriting password");
+                            ((User) authorizable).changePassword(digestPassword(new String(info.getPassword()), "sha1"));
+                        }
                     }
                 }
             }
@@ -173,7 +178,7 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
         }
 
         log.info("Try to AuthenticateByCrowdService, User: {}", username);
-        if (username.equalsIgnoreCase("admin") || username.equalsIgnoreCase("visitor")) {
+        if (username.equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
             return true;
         }
 
