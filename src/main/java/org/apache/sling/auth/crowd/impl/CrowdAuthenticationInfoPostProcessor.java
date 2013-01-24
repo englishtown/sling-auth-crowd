@@ -120,18 +120,20 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
 
                 //only import Crowd user to sling when it is non-BASIC auth
                 if (!info.getAuthType().equalsIgnoreCase(CrowdConstants.BASIC_AUTH_TYPE)) {
-                    Authorizable authorizable = userManager.getAuthorizable(info.getUser());
+                    String username = formatUsername(info.getUser());
+                    info.setUser(username);
+                    Authorizable authorizable = userManager.getAuthorizable(username);
                     if (authorizable == null) {
                         log.info("authorizable is null, try to authenticate from crowd");
 
                         //if user not exists but auth with crowd success, create the user
-                        if (authenticateByCrowdService(info.getUser(), new String(info.getPassword()))) {
+                        if (authenticateByCrowdService(username, new String(info.getPassword()))) {
                             log.info("auth success from crowd, create the user");
-                            userManager.createUser(info.getUser(), new String(info.getPassword()));
+                            userManager.createUser(username, new String(info.getPassword()));
                         }
                     }
-                    else if (!info.getUser().equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
-                        if (authenticateByCrowdService(info.getUser(), new String(info.getPassword()))) {
+                    else if (!username.equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
+                        if (authenticateByCrowdService(username, new String(info.getPassword()))) {
                             log.info("user exists, overwriting password");
                             ((User) authorizable).changePassword(digestPassword(new String(info.getPassword()), "sha1"));
                         }
@@ -168,23 +170,52 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
     }
 
     private boolean authenticateByCrowdService(String username, String password) {
-        //formalize crowd username
-        username = username.trim();
-        if (username.toLowerCase().startsWith("boston\\")) {
-            username = username.substring("boston\\".length());
-        }
-        if (username.contains("@")) {
-            username = username.split("@")[0];
-        }
-
         log.info("Try to AuthenticateByCrowdService, User: {}", username);
-        if (username.equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
+        if (CrowdConstants.SLING_ADMIN_USERNAME.equalsIgnoreCase(username)) {
             return true;
         }
 
         try {
-            boolean authenticated = authenticateCrowdUser(username, password);
-            return authenticated;
+            URL url = new URL(crowdServicePrefix + "rest/usermanagement/1/authentication?username=" + username);
+            log.info("Crowd service URL: " + url.toString());
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            StringWriter auth = new StringWriter();
+            byte[] buffer = (crowdServiceUsername + ":" + crowdServicePassword).getBytes();
+            Base64.encode(buffer, 0, buffer.length, auth);
+            log.info("The basic auth: " + auth.toString().trim());
+            conn.setRequestProperty ("Authorization", "Basic " + auth.toString().trim());
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setDoInput(true);
+            conn.setUseCaches(false);
+            conn.setAllowUserInteraction(false);
+            conn.setRequestProperty("Content-Type", "text/xml");
+            conn.setRequestProperty("Accept-Charset", "UTF-8");
+
+            // Create the form content
+            try {
+                OutputStream out = conn.getOutputStream();
+                Writer writer = new OutputStreamWriter(out, "UTF-8");
+                writer.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+                writer.write("<password>");
+                writer.write("<value>");
+                writer.write(password);
+                writer.write("</value>");
+                writer.write("</password>");
+                writer.close();
+                out.close();
+            }
+            catch (IOException e) {
+                log.error("Failed to get response, error: " + e.toString());
+                return false;
+            }
+
+            if (conn.getResponseCode() != 200) {
+                log.error("Crowd auth failed: " + username);
+                return false;
+            }
+
+            return true;
         }
         catch (IOException e) {
             log.error("Call Crowd authentication service failed: " + e.getMessage());
@@ -193,51 +224,15 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
         return false;
     }
 
-    private boolean authenticateCrowdUser(String username, String password) throws IOException {
-        if (username == null) {
-            return false;
+    private String formatUsername(String username) {
+        username = username.trim();
+        if (username.toLowerCase().startsWith("boston\\")) {
+            username = username.substring("boston\\".length());
         }
-
-        URL url = new URL(crowdServicePrefix + "rest/usermanagement/1/authentication?username=" + username);
-        log.info("Crowd service URL: " + url.toString());
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        StringWriter auth = new StringWriter();
-        byte[] buffer = (crowdServiceUsername + ":" + crowdServicePassword).getBytes();
-        Base64.encode(buffer, 0, buffer.length, auth);
-        log.info("The basic auth: " + auth.toString().trim());
-        conn.setRequestProperty ("Authorization", "Basic " + auth.toString().trim());
-        conn.setRequestMethod("POST");
-        conn.setDoOutput(true);
-        conn.setDoInput(true);
-        conn.setUseCaches(false);
-        conn.setAllowUserInteraction(false);
-        conn.setRequestProperty("Content-Type", "text/xml");
-        conn.setRequestProperty("Accept-Charset", "UTF-8");
-
-        // Create the form content
-        try {
-            OutputStream out = conn.getOutputStream();
-            Writer writer = new OutputStreamWriter(out, "UTF-8");
-            writer.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-            writer.write("<password>");
-            writer.write("<value>");
-            writer.write(password);
-            writer.write("</value>");
-            writer.write("</password>");
-            writer.close();
-            out.close();
+        if (username.contains("@")) {
+            username = username.split("@")[0];
         }
-        catch (IOException e) {
-            log.error("Failed to get response, error: " + e.toString());
-            return false;
-        }
-
-        if (conn.getResponseCode() != 200) {
-            log.error("Crowd auth failed: " + username);
-            return false;
-        }
-
-        return true;
+        return username;
     }
 
     // ---------- SCR Integration
