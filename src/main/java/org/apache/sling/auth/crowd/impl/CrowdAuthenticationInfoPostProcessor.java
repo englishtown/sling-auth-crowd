@@ -27,10 +27,6 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.xpath.XPath;
-import javax.xml.xpath.XPathConstants;
-import javax.xml.xpath.XPathExpression;
-import javax.xml.xpath.XPathFactory;
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -267,10 +263,7 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
                 factory.setNamespaceAware(true); // never forget this!
                 DocumentBuilder builder = factory.newDocumentBuilder();
                 Document doc = builder.parse(new ByteArrayInputStream(content.getBytes()));
-                XPathFactory xpathFac = XPathFactory.newInstance();
-                XPath xpath = xpathFac.newXPath();
-                XPathExpression expr = xpath.compile("//group");
-                NodeList nodeList = (NodeList)expr.evaluate(doc, XPathConstants.NODESET);
+                NodeList nodeList = doc.getDocumentElement().getChildNodes();
                 for (int i = 0; i < nodeList.getLength(); ++i) {
                     groups.add(nodeList.item(i).getAttributes().getNamedItem("name").getNodeValue());
                 }
