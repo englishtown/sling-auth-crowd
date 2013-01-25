@@ -1,6 +1,7 @@
 package org.apache.sling.auth.crowd.impl;
 
 import org.apache.jackrabbit.api.security.user.Authorizable;
+import org.apache.jackrabbit.api.security.user.Group;
 import org.apache.jackrabbit.api.security.user.User;
 import org.apache.jackrabbit.api.security.user.UserManager;
 import org.apache.jackrabbit.util.Base64;
@@ -16,19 +17,29 @@ import org.osgi.service.component.ComponentContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.NodeList;
 
 import javax.jcr.RepositoryException;
 import javax.jcr.Session;
 import javax.jcr.Value;
-import javax.jcr.ValueFactory;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpression;
+import javax.xml.xpath.XPathFactory;
 
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.NoSuchAlgorithmException;
+import java.security.Principal;
+import java.util.ArrayList;
 import java.util.Dictionary;
+import java.util.Iterator;
 
 /**
  * The <code>CrowdAuthenticationInfoPostProcessor</code> class implements
@@ -108,8 +119,9 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
             log.info("in postProcess, info.User: " + info.getUser()
                     + ", info.AuthType: " + info.getAuthType());
 
+            Session session = null;
             try {
-                Session session = getSession();
+                session = getSession();
                 if (session == null) {
                     log.debug("session is null");
                     return;
@@ -136,9 +148,11 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
 
                         //set user version
                         authorizable = userManager.getAuthorizable(username);
-                        String auth_ver = CreateUserAuthVersion(password);
+                        String auth_ver = createUserAuthVersion(password);
                         authorizable.setProperty(CrowdConstants.PROP_USER_AUTH_VERSION
                                 , session.getValueFactory().createValue(auth_ver));
+
+                        updateUserGroupsFromCrowd(session, userManager, authorizable);
                     }
                 }
                 else if (!username.equalsIgnoreCase(CrowdConstants.SLING_ADMIN_USERNAME)) {
@@ -147,8 +161,12 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
                     if (values != null && values.length > 0) {
                         auth_ver_old = values[0].getString();
                     }
-                    String auth_ver_new = CreateUserAuthVersion(password);
-                    if (!auth_ver_new.equals(auth_ver_old)) {
+                    String auth_ver_new = createUserAuthVersion(password);
+                    if (!info.getAuthType().equalsIgnoreCase(CrowdConstants.BASIC_AUTH_TYPE)
+                            || !auth_ver_new.equals(auth_ver_old)) {
+                        //only on FORM login or BASIC login with password changed,
+                        // update user auth version and user groups
+
                         log.info("old: " + auth_ver_old);
                         log.info("new: " + auth_ver_new);
                         if (authenticateByCrowdService(username, password)) {
@@ -156,6 +174,8 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
                             ((User)authorizable).changePassword(auth_ver_new);
                             authorizable.setProperty(CrowdConstants.PROP_USER_AUTH_VERSION
                                     , session.getValueFactory().createValue(auth_ver_new));
+
+                            updateUserGroupsFromCrowd(session, userManager, authorizable);
                         }
                     }
                 }
@@ -163,14 +183,113 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
             catch (RepositoryException ex) {
                 log.debug(ex.toString());
             }
+            finally {
+                if (session != null)
+                    ungetSession(session);
+            }
         }
     }
 
-    private String CreateUserAuthVersion(String password) {
+    // ---------- Internals
+
+    private void updateUserGroupsFromCrowd(Session session, UserManager userManager, Authorizable authorizable) {
+        try
+        {
+            //1. get user groups from crowd
+            ArrayList<String> groups = getUserGroupsFromCrowd(authorizable.getID());
+
+            //2. for each group, create jcr group if not exists, add user to the jcr group if not already in
+            for (int i = 0; i < groups.size(); ++i) {
+                final String groupName = groups.get(i);
+                Group group = (Group)userManager.getAuthorizable(groupName);
+                if (group == null) {
+                    group = userManager.createGroup(new Principal() {
+                        public String getName() {
+                            return groupName;
+                        }
+                    });
+                    Value isCrowdGroup = session.getValueFactory().createValue(true);
+                    group.setProperty(CrowdConstants.IS_CROWD_GROUP, isCrowdGroup);
+                    log.info("imported crowd group: " + groupName);
+                }
+                if (!(group.isMember(authorizable))) {
+                    group.addMember(authorizable);
+
+                    log.info("added " + authorizable.getID() + " to group: " + groupName);
+                }
+            }
+
+            //3. get all jcr groups of this user which are imported from crowd,
+            // if user no longer in the group, remove user from group
+            Iterator<Group> userGroups = authorizable.memberOf();
+            while (userGroups.hasNext()) {
+                Group group = userGroups.next();
+                Value[] values = group.getProperty(CrowdConstants.IS_CROWD_GROUP);
+                boolean isCrowdGroup = false;
+                if (values.length > 0)
+                    isCrowdGroup = values[0].getBoolean();
+                if (isCrowdGroup && !groups.contains(group.getID())) {
+                    group.removeMember(authorizable);
+
+                    log.info("removed " + authorizable.getID() + " from group: " + group.getID());
+                }
+            }
+
+        }
+        catch(Exception e) {
+            log.error("updateUserGroupsFromCrowd, error: " + e.getMessage());
+        }
+    }
+    
+    private ArrayList<String> getUserGroupsFromCrowd(String username) {
+        ArrayList<String> groups = new ArrayList<String>();
+
+        try {
+            URL url = new URL(crowdServicePrefix + "rest/usermanagement/1/user/group/nested?username=" + username);
+            log.info("Crowd service URL: " + url.toString());
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            setConnectionAuthorization(conn);
+            conn.setDoInput(true);
+            conn.setUseCaches(false);
+            conn.setAllowUserInteraction(false);
+            conn.setRequestProperty("Accept-Charset", "UTF-8");
+
+            BufferedReader in = new BufferedReader(new InputStreamReader(
+                    conn.getInputStream()));
+            String content = "";
+            String buffer;
+            while ((buffer = in.readLine()) != null)
+                content += buffer;
+            in.close();
+
+            if (conn.getResponseCode() == 200) {
+                DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+                factory.setNamespaceAware(true); // never forget this!
+                DocumentBuilder builder = factory.newDocumentBuilder();
+                Document doc = builder.parse(new ByteArrayInputStream(content.getBytes()));
+                XPathFactory xpathFac = XPathFactory.newInstance();
+                XPath xpath = xpathFac.newXPath();
+                XPathExpression expr = xpath.compile("//group");
+                NodeList nodeList = (NodeList)expr.evaluate(doc, XPathConstants.NODESET);
+                for (int i = 0; i < nodeList.getLength(); ++i) {
+                    groups.add(nodeList.item(i).getAttributes().getNamedItem("name").getNodeValue());
+                }
+            }
+            else
+            {
+                log.error("getUserGroupsFromCrowd failed, status code: " + conn.getResponseCode());
+            }
+        }
+        catch (Exception e) {
+            log.error("getUserGroupsFromCrowd failed, error: " + e.getMessage());
+        }
+
+        return groups;
+    }
+    
+    private String createUserAuthVersion(String password) {
         return digestPassword(password, CrowdConstants.USER_PASSWORD_DIGEST_TYPE);
     }
-
-    // ---------- Internals
 
     /**
      * Digest the given password using the given digest algorithm
@@ -203,11 +322,7 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
             URL url = new URL(crowdServicePrefix + "rest/usermanagement/1/authentication?username=" + username);
             log.info("Crowd service URL: " + url.toString());
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            StringWriter auth = new StringWriter();
-            byte[] buffer = (crowdServiceUsername + ":" + crowdServicePassword).getBytes();
-            Base64.encode(buffer, 0, buffer.length, auth);
-            log.info("The basic auth: " + auth.toString().trim());
-            conn.setRequestProperty ("Authorization", "Basic " + auth.toString().trim());
+            setConnectionAuthorization(conn);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setDoInput(true);
@@ -248,6 +363,14 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
         return false;
     }
 
+    private void setConnectionAuthorization(HttpURLConnection conn) throws IOException {
+        StringWriter auth = new StringWriter();
+        byte[] buffer = (crowdServiceUsername + ":" + crowdServicePassword).getBytes();
+        Base64.encode(buffer, 0, buffer.length, auth);
+        log.info("The basic auth: " + auth.toString().trim());
+        conn.setRequestProperty ("Authorization", "Basic " + auth.toString().trim());
+    }
+
     private String formatUsername(String username) {
         username = username.trim();
         if (username.toLowerCase().startsWith("boston\\")) {
@@ -261,10 +384,8 @@ public class CrowdAuthenticationInfoPostProcessor implements AuthenticationInfoP
 
     // ---------- SCR Integration
 
-    private ComponentContext context;
-
     protected void activate(ComponentContext componentContext) {
-        context = componentContext;
+        ComponentContext context = componentContext;
         Dictionary<?, ?> props = context.getProperties();
 
         crowdServicePrefix = OsgiUtil.toString(props.get(
